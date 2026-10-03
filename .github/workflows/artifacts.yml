@@ -56,6 +56,19 @@ jobs:
         with:
           path: deploy
 
+      # GH's arm runners bake rustup's default-host as x86_64, so cross/rustup
+      # try to install stable-x86_64-unknown-linux-gnu on an aarch64 machine
+      # and die ("may not be able to run on this system"). Pin the native host
+      # explicitly (musl triple -> gnu triple), which bypasses default-host.
+      - name: Pin native host toolchain
+        run: |
+          set -euo pipefail
+          host="${{ matrix.target }}"
+          host="${host/musl/gnu}"
+          echo "host toolchain: stable-$host"
+          rustup toolchain install "stable-$host" --profile minimal
+          rustup default "stable-$host"
+
       # cross ships the musl C++ toolchain (Luau) that `cc` looks up as
       # <arch>-linux-musl-g++; musl-tools is C-only and cannot build it.
       - name: Install cross
