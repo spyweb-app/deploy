@@ -1,0 +1,47 @@
+# SpyWeb systemd unit - reference copy.
+# setup-systemd.sh writes this (with your values) to /etc/systemd/system/.
+# Manual install:
+#   1. copy to /etc/systemd/system/spyweb.service; change these paths
+#      (/opt/spyweb) and user to your spyweb dir
+#   2. write /etc/spyweb/env (mode 0640) with what you need - the engine
+#      reads SPYWEB_* natively, no wrapper:
+#        SPYWEB_PORT=7979
+#        SPYWEB_API_KEY=<openssl rand -hex 16>
+#        #SPYWEB_THREADS=2
+#        #SPYWEB_LOG=info                info|warn|error
+#        #SPYWEB_DISABLE_SERVER=1        scraping only, no dashboard
+#   3. systemctl daemon-reload && systemctl enable --now spyweb
+[Unit]
+Description=SpyWeb scraping/monitoring engine
+Documentation=https://docs.spyweb.app/api-and-server/deployment/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spyweb
+Group=spyweb
+WorkingDirectory=/opt/spyweb
+EnvironmentFile=/etc/spyweb/env
+Environment=HOME=/opt/spyweb
+ExecStart=/opt/spyweb/spyweb start
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/spyweb
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

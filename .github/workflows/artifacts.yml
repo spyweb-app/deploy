@@ -1,0 +1,124 @@
+# Build the SpyWeb packages dl.spyweb.app does not serve: static-musl x86_64
+# + aarch64, in KV and SQL. Everything else runs these (static musl works on
+# any distro/libc); x86_64+glibc>=2.39 uses the official dl release instead.
+# CLI only (no tray) - headless targets.
+# Output: release `spyweb-<version>` with spyweb-linux-musl-<arch>[-sql].tar.gz
+# consumed by scripts/get-spyweb.sh and the Docker builds.
+name: artifacts
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SpyWeb version (e.g. 1.5.5 - a leading v is fine; ignored on tag runs, the tag name is used)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.asset }} ${{ matrix.storage }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: musl-aarch64, storage: kv }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: musl-aarch64, storage: sql }
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-musl,  asset: musl-x86_64,  storage: kv }
+          - { runner: ubuntu-latest,    target: x86_64-unknown-linux-musl,  asset: musl-x86_64,  storage: sql }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Normalize version
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          SRC="$INPUT_VERSION"
+          if [ -z "$SRC" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then SRC="$GITHUB_REF_NAME"; fi
+          [ -n "$SRC" ] || { echo "no version: pass the input or push a v* tag" >&2; exit 1; }
+          VER="${SRC#v}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout SpyWeb v${{ inputs.version }}
+        uses: actions/checkout@v4
+        with:
+          repository: spyweb-app/spyweb
+          ref: v${{ steps.meta.outputs.version }}
+
+      - name: Checkout deploy
+        uses: actions/checkout@v4
+        with:
+          path: deploy
+
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add ${{ matrix.target }}
+
+      - name: Build + package + test
+        run: >
+          bash deploy/scripts/build-package.sh
+          --repo .
+          --target ${{ matrix.target }}
+          --storage ${{ matrix.storage }}
+          --asset ${{ matrix.asset }}
+          --out dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.asset }}-${{ matrix.storage }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish spyweb-<version> release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize version
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          SRC="$INPUT_VERSION"
+          if [ -z "$SRC" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then SRC="$GITHUB_REF_NAME"; fi
+          [ -n "$SRC" ] || { echo "no version: pass the input or push a v* tag" >&2; exit 1; }
+          VER="${SRC#v}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="spyweb-$VERSION"
+          ls -l dist/
+          for f in dist/*.tar.gz; do
+            # cross-check the tarball name get-spyweb.sh will ask for
+            # (no head/grep -q here: pipefail + SIGPIPE would fail the step)
+            first="$(tar -tzf "$f" | sed -n '1p')"
+            [ "${first%%/*}" = "spyweb" ] || { echo "bad layout: $f ($first)"; exit 1; }
+          done
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" \
+              --title "SpyWeb $VERSION artifacts (static musl)" \
+              --notes "Static-musl SpyWeb packages built by the artifacts workflow: x86_64 + aarch64, KV and SQL. Consumed by scripts/get-spyweb.sh and the Docker images."
+          fi

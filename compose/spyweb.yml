@@ -1,0 +1,26 @@
+# SpyWeb - docker compose example
+#   1. cp .env.example .env   (set SPYWEB_API_KEY)
+#   2. docker compose -f spyweb.yml up -d
+# Swap the tag for the SQL build: ghcr.io/spyweb-app/spyweb:latest-sql
+#
+# env_file: only variables actually set in .env reach the container.
+# Never leave a var empty - an empty value still counts as set.
+# SPYWEB_DISABLE_SERVER is presence-triggered: ANY value (0, false, even
+# empty) disables the dashboard - comment the line out entirely to keep it on.
+services:
+  spyweb:
+    image: ghcr.io/spyweb-app/spyweb:${SPYWEB_TAG:-latest}
+    container_name: spyweb
+    restart: unless-stopped
+    ports:
+      - "${SPYWEB_PORT:-7979}:${SPYWEB_PORT:-7979}"
+    env_file:
+      - .env
+    volumes:
+      # runtime dir: package files (synced on image upgrade), data*, jobs/, jobs.toml
+      - spyweb-data:/opt/spyweb
+    # extra engine args pass through the entrypoint, e.g.:
+    #   command: ["--no-server"]
+
+volumes:
+  spyweb-data:

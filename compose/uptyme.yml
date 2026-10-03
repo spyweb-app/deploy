@@ -1,0 +1,22 @@
+# Uptyme - docker compose example
+#   1. cp .env.example .env   (set SPYWEB_MODE / SPYWEB_* for cluster modes)
+#   2. docker compose -f uptyme.yml up -d
+# Standalone needs nothing (SPYWEB_MODE unset = standalone default).
+#
+# env_file: only variables actually set in .env reach the container -
+# commented lines stay unset, so config.lua falls back to its defaults.
+services:
+  uptyme:
+    image: ghcr.io/spyweb-app/uptyme:${UPTYME_TAG:-latest}
+    container_name: uptyme
+    restart: unless-stopped
+    ports:
+      - "${SPYWEB_PORT:-7979}:${SPYWEB_PORT:-7979}"
+    env_file:
+      - .env
+    volumes:
+      # runtime dir: package files (synced on image upgrade), data*, config.lua, jobs/
+      - uptyme-data:/opt/uptyme
+
+volumes:
+  uptyme-data:

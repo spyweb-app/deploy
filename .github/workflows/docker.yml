@@ -1,0 +1,176 @@
+# Build + push the GHCR images. Storage for the spyweb image is a build-time
+# feature, so it is chosen by the tag: :X / :latest = KV, :X-sql / :latest-sql = SQL.
+name: docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      spyweb_version:
+        description: "SpyWeb version for tags + package pin (e.g. 1.5.5 - a leading v is fine)"
+        required: true
+        type: string
+      uptyme_version:
+        description: "Uptyme version for tags (default: latest)"
+        required: false
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  spyweb:
+    name: spyweb (${{ matrix.storage }})
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [kv, sql]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.spyweb_version }}
+          STORAGE: ${{ matrix.storage }}
+        run: |
+          set -euo pipefail
+          VER="${INPUT_VERSION#v}"
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          if [ "$STORAGE" = "sql" ]; then SUFFIX="-sql"; else SUFFIX=""; fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tags=ghcr.io/${OWNER,,}/spyweb:${VER}${SUFFIX},ghcr.io/${OWNER,,}/spyweb:latest${SUFFIX}" >> "$GITHUB_OUTPUT"
+
+      # Host-side test: proves -p actually reaches the engine.
+      - name: Build (amd64) test image
+        run: |
+          docker build -f docker/spyweb/Dockerfile \
+            --build-arg STORAGE=${{ matrix.storage }} \
+            --build-arg SPYWEB_VERSION=${{ steps.meta.outputs.version }} \
+            -t "test/spyweb:${{ matrix.storage }}" .
+
+      - name: Test - host -> published port -> relay -> engine
+        run: |
+          set -euo pipefail
+          docker run -d --name test -p 127.0.0.1:17979:7979 \
+            -e SPYWEB_API_KEY=testkey "test/spyweb:${{ matrix.storage }}"
+          code=000
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'X-SpyWeb-Key: testkey' http://127.0.0.1:17979/api/jobs || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "expected 200 via published port, got '$code'"
+            docker logs test
+            exit 1
+          fi
+          code2=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:17979/api/jobs || true)
+          if [ "$code2" != "401" ]; then
+            echo "expected 401 without key, got '$code2'"
+            docker logs test
+            exit 1
+          fi
+          docker rm -f test
+          echo "test OK: host -> eth0:7979 -> socat -> 127.0.0.1:7979"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/spyweb/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            STORAGE=${{ matrix.storage }}
+            SPYWEB_VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  uptyme:
+    name: uptyme (sql)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.uptyme_version }}
+        run: |
+          set -euo pipefail
+          VER="${INPUT_VERSION#v}"
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          if [ "$VER" = "latest" ]; then
+            echo "tags=ghcr.io/${OWNER,,}/uptyme:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/${OWNER,,}/uptyme:${VER},ghcr.io/${OWNER,,}/uptyme:latest" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      # proves host -> eth0:7979 -> socat -> 127.0.0.1:7979 works).
+      - name: Build (amd64) test image
+        run: docker build -f docker/uptyme/Dockerfile --build-arg UPTYME_VERSION=${{ steps.meta.outputs.version }} -t test/uptyme .
+
+      - name: Test - host -> published port -> relay -> engine
+        run: |
+          set -euo pipefail
+          docker run -d --name test -p 127.0.0.1:17978:7979 test/uptyme
+          code=000
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:17978/ || true)
+            [ "$code" != "000" ] && break
+            sleep 1
+          done
+          if [ "$code" = "000" ]; then
+            echo "no HTTP response from published port"
+            docker logs test
+            exit 1
+          fi
+          docker rm -f test
+          echo "test OK (HTTP $code): host -> eth0:7979 -> socat -> 127.0.0.1:7979"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/uptyme/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            UPTYME_VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
