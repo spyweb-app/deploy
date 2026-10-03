@@ -17,6 +17,8 @@ Usage: build-package.sh [options]
 Options:
   --repo DIR     spyweb checkout to build (default: .)
   --target T     rust triple, or 'native' (default: native)
+  --cross        build via `cross` instead of cargo (needs docker);
+                 requires --target (cross ships the musl C++ toolchain)
   --storage kv|sql  storage backend (default: kv)
   -kv, -sql         shorthand for --storage kv|sql
   --asset NAME   asset label for the tarball name, e.g. aarch64,
@@ -31,6 +33,7 @@ TARGET="native"
 STORAGE="kv"
 ASSET=""
 OUT="dist"
+CROSS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +41,7 @@ while [ $# -gt 0 ]; do
     --repo=*) REPO="${1#*=}"; shift ;;
     --target) TARGET="$2"; shift 2 ;;
     --target=*) TARGET="${1#*=}"; shift ;;
+    --cross) CROSS=1; shift ;;
     --storage) STORAGE="$2"; shift 2 ;;
     --storage=*) STORAGE="${1#*=}"; shift ;;
     -kv) STORAGE="kv"; shift ;;
@@ -64,17 +68,26 @@ cd "$REPO"
 
 CARGO_TARGET_FLAG=()
 BIN="target/release/spyweb"
+RUNNER="cargo"
 if [ "$TARGET" != "native" ]; then
-  command -v rustup >/dev/null 2>&1 || fail "rustup required to build for $TARGET"
-  note "adding rust target $TARGET"
-  rustup target add "$TARGET"
   CARGO_TARGET_FLAG=(--target "$TARGET")
   BIN="target/$TARGET/release/spyweb"
+  if [ "$CROSS" = "1" ]; then
+    command -v cross >/dev/null 2>&1 ||
+      fail "cross not found - install it: cargo install cross --locked"
+  else
+    command -v rustup >/dev/null 2>&1 || fail "rustup required to build for $TARGET"
+    note "adding rust target $TARGET"
+    rustup target add "$TARGET"
+  fi
+else
+  [ "$CROSS" = "0" ] || fail "--cross requires --target (musl cross build)"
 fi
+[ "$CROSS" = "1" ] && RUNNER="cross"
 
-note "cargo build --release --bin spyweb $FEATURES${TARGET:+ [$TARGET]}"
+note "$RUNNER build --release --bin spyweb $FEATURES${TARGET:+ [$TARGET]}"
 # shellcheck disable=SC2086
-cargo build --release --bin spyweb $FEATURES "${CARGO_TARGET_FLAG[@]}"
+"$RUNNER" build --release --bin spyweb $FEATURES "${CARGO_TARGET_FLAG[@]}"
 [ -x "$BIN" ] || fail "binary not found at $BIN"
 
 # musl builds must be fully static - should run any distro

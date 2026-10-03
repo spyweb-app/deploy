@@ -56,17 +56,17 @@ jobs:
         with:
           path: deploy
 
-      - name: Install musl toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          rustup target add ${{ matrix.target }}
+      # cross ships the musl C++ toolchain (Luau) that `cc` looks up as
+      # <arch>-linux-musl-g++; musl-tools is C-only and cannot build it.
+      - name: Install cross
+        run: cargo install cross --locked
 
       - name: Build + package + test
         run: >
           bash deploy/scripts/build-package.sh
           --repo .
           --target ${{ matrix.target }}
+          --cross
           --storage ${{ matrix.storage }}
           --asset ${{ matrix.asset }}
           --out dist
