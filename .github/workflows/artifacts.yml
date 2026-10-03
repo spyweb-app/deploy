@@ -56,25 +56,25 @@ jobs:
         with:
           path: deploy
 
-      # GH's arm runners bake rustup's default-host as x86_64, so cross/rustup
-      # try to install stable-x86_64-unknown-linux-gnu on an aarch64 machine
-      # and die ("may not be able to run on this system"). Pin the native host
-      # explicitly (musl triple -> gnu triple), which bypasses default-host.
-      - name: Pin native host toolchain
-        run: |
-          set -euo pipefail
-          host="${{ matrix.target }}"
-          host="${host/musl/gnu}"
-          echo "host toolchain: stable-$host"
-          rustup toolchain install "stable-$host" --profile minimal
-          rustup default "stable-$host"
+      # arm legs: alpine inside docker
+      - name: Build + package + test (alpine)
+        if: matrix.runner == 'ubuntu-24.04-arm'
+        run: >
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work
+          rust:alpine sh -c
+          'apk add --no-cache build-base bash binutils git &&
+          bash deploy/scripts/build-package.sh --repo .
+          --target ${{ matrix.target }}
+          --storage ${{ matrix.storage }}
+          --asset ${{ matrix.asset }}
+          --out dist'
 
-      # cross ships the musl C++ toolchain (Luau) that `cc` looks up as
-      # <arch>-linux-musl-g++; musl-tools is C-only and cannot build it.
       - name: Install cross
+        if: matrix.runner != 'ubuntu-24.04-arm'
         run: cargo install cross --locked
 
-      - name: Build + package + test
+      - name: Build + package + test (cross)
+        if: matrix.runner != 'ubuntu-24.04-arm'
         run: >
           bash deploy/scripts/build-package.sh
           --repo .
